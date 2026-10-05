@@ -1,0 +1,78 @@
+import com.sap.gateway.ip.core.customdev.util.Message
+import groovy.json.JsonSlurper
+import groovy.json.JsonOutput
+
+// Function to move @SEGMENT and @BEGIN to the beginning of each node
+def moveSegmentAndBeginToBeginning(node) {
+    if (node instanceof Map) {
+        // Prepare to store any @BEGIN or @SEGMENT properties found
+        def segmentValue = node.remove('@SEGMENT')
+        def beginValue = node.remove('@BEGIN')
+
+        // Create a new map with the properties in order, if they exist
+        def reorderedNode = [:]
+        if (beginValue != null) reorderedNode['@BEGIN'] = beginValue
+        if (segmentValue != null) reorderedNode['@SEGMENT'] = segmentValue
+
+        // Add the rest of the original node's properties
+        reorderedNode.putAll(node)
+
+        // Clear and update the original node
+        node.clear()
+        node.putAll(reorderedNode)
+
+        // Recursively process each entry
+        node.each { key, value -> moveSegmentAndBeginToBeginning(value) }
+    } else if (node instanceof List) {
+        // Process each item in the list
+        node.each { item -> moveSegmentAndBeginToBeginning(item) }
+    }
+}
+
+// Function to update the RCVPRN and RCVPRT fields in EDI_DC40 segment
+def updateEDIFields(node, SAP_Receiver) {
+    if (node instanceof Map) {
+        // Check if the node is the EDI_DC40 segment and update the RCVPRN and RCVPRT fields
+        if (node.containsKey('EDI_DC40')) {
+            def ediDc40 = node['EDI_DC40']
+            
+            // Update RCVPRN with the value from the header
+            if (ediDc40.containsKey('RCVPRN')) {
+                ediDc40['RCVPRN'] = SAP_Receiver
+            }
+
+            // Set RCVPRT to 'LS'
+            ediDc40['RCVPRT'] = 'LS'
+        }
+
+        // Recursively update child nodes
+        node.each { key, value -> updateEDIFields(value, SAP_Receiver) }
+    } else if (node instanceof List) {
+        // Process each item in the list
+        node.each { item -> updateEDIFields(item, SAP_Receiver) }
+    }
+}
+
+def Message processData(Message message) {
+    // Retrieve the JSON payload from the message body
+    def body = message.getBody(String) // Get message body as String
+    def jsonSlurper = new JsonSlurper()
+    def jsonObject = jsonSlurper.parseText(body) // Parse the JSON payload
+
+    // Retrieve the Receiver_PRN value from the message header
+    def receiverPRN = message.getHeader("SAP_Receiver", String)
+
+    // Apply the function to move @SEGMENT and @BEGIN fields
+    moveSegmentAndBeginToBeginning(jsonObject)
+
+    // Update the RCVPRN and RCVPRT fields in EDI_DC40 segment
+    updateEDIFields(jsonObject, receiverPRN)
+
+    // Convert the modified JSON object back to a string
+    def outputJsonString = JsonOutput.toJson(jsonObject)
+
+    // Set the modified JSON as the new message body
+    message.setBody(outputJsonString)
+
+    return message
+}
